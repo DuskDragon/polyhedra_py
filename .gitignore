@@ -46,6 +46,7 @@ nosetests.xml
 output
 interpreter_log.txt
 interpreter_preload.txt
+discord.log
 
 # pycharm
 .idea
