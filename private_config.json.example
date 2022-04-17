@@ -1,6 +1,0 @@
-{
-    "DiscordAPIKey": "base64 key",
-    "LoggingLevel": "NONE CRITICAL ERROR WARNING INFO DEBUG, pick one",
-    "IdleISS_Discord_Server": "serverIDnumber",
-    "IdleISS_Reports_Channel": "channelIDnumber"
-}
