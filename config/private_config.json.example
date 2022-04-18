@@ -2,6 +2,7 @@
     "DiscordAPIKey": "base64 key",
     "heartbeat_timeout": 150.0,
     "LoggingLevel": "NONE CRITICAL ERROR WARNING INFO DEBUG, pick one",
+    "polyhedra_save_file": "output/save_file.json",
     "IdleISS_Discord_Server": "serverIDnumber",
     "IdleISS_Reports_Channel": "channelIDnumber",
     "IdleISS_Universe_Config": "config/Universe_Config.json",

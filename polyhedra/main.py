@@ -1,5 +1,6 @@
 from idleiss.core import GameEngine
 import time
+import bisect
 
 #import argparse
 #import os
@@ -13,16 +14,38 @@ import asyncio
 
 heartbeat_step = 300 #seconds, minute aligned UTC timestamp aligned. Min = 120
 
+#bisect tools
+def index(a, x):
+    'Locate the leftmost value in sorted list a exactly equal to x'
+    i = bisect.bisect_left(a, x)
+    if i != len(a) and a[i] == x:
+        return i
+    return None
+
+def is_present(a, x):
+    'Return if sorted list a contains x'
+    i = bisect.bisect_left(a, x)
+    if i != len(a) and a[i] == x:
+        return True
+    return False
+
 class PolyhedraClient(discord.Client):
     def __init__(self, Config):
         #config for both
         self.config = Config
+        self.userlist = []
         #idleiss interface
         universe_filename = Config['IdleISS_Universe_Config']
         library_filename = Config['IdleISS_Ships_Config']
         self.engine = GameEngine(universe_filename, library_filename)
         self.engine_lock = asyncio.Lock()
-        #discord junk
+        self.engine_is_ready = False
+        #idleiss debug
+        print(''.join(self.engine.universe.debug_output))
+        print(f"Universe successfully loaded from {universe_filename}")
+        print(f"Starships successfully loaded from {library_filename}: ")
+        print(f"\tImported {len(self.engine.library.ship_data)} ships")
+        #discord setup
         allowed_mentions = discord.AllowedMentions(roles=True, everyone=False, users=False)
         intents = discord.Intents(
             guilds = True,
@@ -58,14 +81,24 @@ class PolyhedraClient(discord.Client):
 
         @tree.command(guild = discord.Object(id = self.config['IdleISS_Discord_Server']), name = 'register', description = 'Start Playing IdleISS')
         async def register(interaction: discord.Interaction):
-            #TODO defer until response from IDLEISS
-            #TODO send this to IDLEISS
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            print(f'/register defered: <@{interaction.user.id}>') #debug
+            present = True
+            #grab engine_lock before modifying the userlist
             async with self.engine_lock:
-                interaction.user.id
-            #TODO as soon as we are done interacting with IDLEISS release lock on IDLEISS
+                present = is_present(self.userlist, f'<@{interaction.user.id}>')
+                if not present:
+                    bisect.insort(self.userlist, f'<@{interaction.user.id}>')
+            #as soon as we are done interacting with IDLEISS release lock on IDLEISS
             #TODO update this text, perhaps with a config or "language pack"
             #TODO needs to be updated to interaction.followup.send
-            await interaction.response.send_message(f'Your fleet has been dispached to construct your first structure.', ephemeral=True)
+            if not present:
+                await interaction.followup.send(f'Your fleet has been dispached to construct your first structure.', ephemeral=True)
+                print(f'/register followup: <@{interaction.user.id}> added') #debug
+            else:
+                await interaction.followup.send(f'You have already registered.', ephemeral=True)
+                print(f'/register followup: <@{interaction.user.id}> already exists') #debug
+                #TODO spam protection increment
 
     async def on_ready(self):
         print('Logged on as {0}!'.format(self.user))
@@ -98,23 +131,29 @@ class PolyhedraClient(discord.Client):
     @tasks.loop(seconds=0.5, count=(int(heartbeat_step)*2)+1, reconnect=True)
     async def _heartbeat_align(self):
         if self.engine_heartbeat.is_running():
-            #we don't need to time the start of a new engine if it's already running
             self._heartbeat_align.stop()
             return
         async with self.engine_lock:
             if (
-                    int(time.time()) % heartbeat_step >= 0 and
-                    int(time.time()) % heartbeat_step <= 45
+                    int(time.time()) % heartbeat_step >= 10 and
+                    int(time.time()) % heartbeat_step <= 50
                 ):
                 self.engine_heartbeat.start()
                 self._heartbeat_align.stop()
 
     @tasks.loop(minutes=float(heartbeat_step/60), count=None, reconnect=True)
     async def engine_heartbeat(self):
+        updates = ''
         async with self.engine_lock:
             #TODO: replace with full IdleISS interface
             channel = self.get_channel(int(self.config['IdleISS_Reports_Channel']))
-            await channel.send(f'heartbeat: {int(time.time())}')
+            current_time = int(time.time())
+            await channel.send(f'heartbeat: <t:{current_time}>') #debug
+            mes_manager = self.engine.update_world(self.userlist, current_time)
+            message_array = mes_manager.get_broadcasts_with_time_diff(current_time)
+            updates = '\n'.join(message_array)
+            if updates != '':
+                await channel.send(f'Events:\n{updates}',allowed_mentions=None)
 
     async def on_message(self, message):
         if message.author == self.user:
@@ -135,6 +174,7 @@ class PolyhedraClient(discord.Client):
 def run():
     #load config
     config_file = 'config/private_config.json'
+    config = None
     with open(config_file, "r") as fd:
         config = json.load(fd)
         fd.close()
@@ -151,7 +191,13 @@ def run():
         print(f'{config_file} missing IdleISS_Ships_Config')
         return
 
-    #TODO: load IdleISS state from storage
+    #attempt IdleISS state from storage
+    if config.get('polyhedra_save_file') == None:
+        print(f'{config_file} missing polyhedra_save_file')
+        return
+    #with open(config['polyhedra_save_file'], 'r') as fd:
+    #    json.load(fd)
+    #    fd.close()
 
     #setup logging
     logger = logging.getLogger('discord')
