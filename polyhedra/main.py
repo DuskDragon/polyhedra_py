@@ -61,7 +61,9 @@ class PolyhedraClient(discord.Client):
         #config for both
         self.config = Config
         self.userlist = []
-        self.admin_id = int(Config.get('IdleISS_Admin'))
+        self.admin_id = int(Config.get('IdleISS_Admin', '0'))
+        self.home_server = int(Config.get('IdleISS_Server', '0'))
+        self.quiet_channel = int(self.config.get('IdleISS_Commands_Channel', '0'))
         #idleiss interface
         universe_filename = Config['IdleISS_Universe_Config']
         library_filename = Config['IdleISS_Ships_Config']
@@ -99,15 +101,15 @@ class PolyhedraClient(discord.Client):
         self.process_command_tree()
 
     def process_command_tree(self):
-        if self.config.get('IdleISS_Server') == None:
+        if self.home_server == 0:
             return
         tree = self.tree
 
-        @tree.command(guild = discord.Object(id = self.config['IdleISS_Server']), name = 'test', description = 'testing')
+        @tree.command(guild = discord.Object(id = self.home_server), name = 'test', description = 'testing')
         async def test(interaction: discord.Interaction):
             await interaction.response.send_message(f'I am working! I was made with Discord.py', ephemeral=True)
 
-        @tree.command(guild = discord.Object(id = self.config['IdleISS_Server']), name = 'register', description = 'Start Playing IdleISS')
+        @tree.command(guild = discord.Object(id = self.home_server), name = 'register', description = 'Start Playing IdleISS')
         async def register(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True, thinking=True)
             print(f'/register defered: <@{interaction.user.id}>') #debug
@@ -128,7 +130,7 @@ class PolyhedraClient(discord.Client):
                 print(f'/register followup: <@{interaction.user.id}> already exists') #debug
                 #TODO spam protection increment
 
-        @tree.command(guild = discord.Object(id = self.config['IdleISS_Server']), name = 'info', description = 'Display information about a specific solar system.')
+        @tree.command(guild = discord.Object(id = self.home_server), name = 'info', description = 'Display information about a specific solar system.')
         @discord.app_commands.describe(system_name='The solar system to inspect')
         async def info(interaction: discord.Interaction, system_name: str):
             panel = False
@@ -153,9 +155,9 @@ class PolyhedraClient(discord.Client):
             await interaction.response.send_message(content=f'Not implemented for non-admins yet.', ephemeral=True) #TODO IMPLEMENT THIS
 
         #admin commands
-        if self.admin_id == None:
+        if self.admin_id == 0:
             return
-        @tree.command(guild = discord.Object(id = self.config['IdleISS_Server']), name = 'inspect', description = 'Admin Only: Inspect a user')
+        @tree.command(guild = discord.Object(id = self.home_server), name = 'inspect', description = 'Admin Only: Inspect a user')
         @discord.app_commands.describe(username='The user to inspect')
         async def inspect(interaction: discord.Interaction, username: str):
             if interaction.user.id != self.admin_id:
@@ -174,9 +176,9 @@ class PolyhedraClient(discord.Client):
     async def on_ready(self):
         print('Logged on as {0}!'.format(self.user))
         await self.wait_until_ready()
-        if self.config.get('IdleISS_Server') != None:
+        if self.home_server != None:
             if not self.synced:
-                await self.tree.sync(guild = discord.Object(id = self.config['IdleISS_Server']))
+                await self.tree.sync(guild = discord.Object(id = self.home_server))
                 self.synced = True
                 print('IdleISS Server Commands Updated')
             if (
@@ -233,12 +235,12 @@ class PolyhedraClient(discord.Client):
             print('Direct Message with {0.author}: {0.content}'.format(message))
         else:
             print('#{0.channel}-{0.author}: {0.content}'.format(message))
-        #delete any message posted in IdleISS_Commands_Channel
+        #delete any message posted in IdleISS_Commands_Channel: self.quiet_channel
         if message.guild != None and message.channel != None:
             if (
-                    message.channel.id == int(self.config.get('IdleISS_Commands_Channel', '0')) and
-                    message.guild.id == int(self.config.get('IdleISS_Server', '0')) and
-                    message.author.id != int(self.config.get('IdleISS_Admin', '0'))
+                    message.channel.id == self.quiet_channel and
+                    message.guild.id == self.home_server and
+                    message.author.id != self.admin_id
                 ):
                     counter = 0
                     while counter <= 10:
