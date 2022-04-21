@@ -29,11 +29,39 @@ def is_present(a, x):
         return True
     return False
 
+class Admin_Panel(discord.ui.View):
+    def __init__(self, interaction):
+        self.selection = None
+        self.interaction = interaction
+        super().__init__(timeout=None)
+
+    @discord.ui.button(style=discord.ButtonStyle.green, label='Standard', custom_id='standard')
+    async def select_standard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.selection != None:
+            return
+        self.selection = 'Standard'
+        self.interaction = interaction
+        self.stop()
+
+    @discord.ui.button(style=discord.ButtonStyle.red, label='Admin', custom_id='admin')
+    async def select_admin(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.selection != None:
+            return
+        self.selection = 'Admin'
+        self.interaction = interaction
+        self.stop()
+
+    # async def on_timeout(self):
+        # if self.selection != None:
+            # return
+        # self.stop()
+
 class PolyhedraClient(discord.Client):
     def __init__(self, Config):
         #config for both
         self.config = Config
         self.userlist = []
+        self.admin_id = int(Config.get('IdleISS_Admin'))
         #idleiss interface
         universe_filename = Config['IdleISS_Universe_Config']
         library_filename = Config['IdleISS_Ships_Config']
@@ -71,15 +99,15 @@ class PolyhedraClient(discord.Client):
         self.process_command_tree()
 
     def process_command_tree(self):
-        if self.config.get('IdleISS_Discord_Server') == None:
+        if self.config.get('IdleISS_Server') == None:
             return
         tree = self.tree
 
-        @tree.command(guild = discord.Object(id = self.config['IdleISS_Discord_Server']), name = 'test', description = 'testing')
-        async def slash(interaction: discord.Interaction):
+        @tree.command(guild = discord.Object(id = self.config['IdleISS_Server']), name = 'test', description = 'testing')
+        async def test(interaction: discord.Interaction):
             await interaction.response.send_message(f'I am working! I was made with Discord.py', ephemeral=True)
 
-        @tree.command(guild = discord.Object(id = self.config['IdleISS_Discord_Server']), name = 'register', description = 'Start Playing IdleISS')
+        @tree.command(guild = discord.Object(id = self.config['IdleISS_Server']), name = 'register', description = 'Start Playing IdleISS')
         async def register(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True, thinking=True)
             print(f'/register defered: <@{interaction.user.id}>') #debug
@@ -100,12 +128,55 @@ class PolyhedraClient(discord.Client):
                 print(f'/register followup: <@{interaction.user.id}> already exists') #debug
                 #TODO spam protection increment
 
+        @tree.command(guild = discord.Object(id = self.config['IdleISS_Server']), name = 'info', description = 'Display information about a specific solar system.')
+        @discord.app_commands.describe(system_name='The solar system to inspect')
+        async def info(interaction: discord.Interaction, system_name: str):
+            panel = False
+            if interaction.user.id == self.admin_id:
+                panel = True
+                view = Admin_Panel(interaction)
+                await interaction.response.send_message('Select mode:', view=view, ephemeral=True)
+                await view.wait() # Wait for View to stop listening for input
+                if view.selection == None:
+                    return #no way to update view currently
+                if view.selection == 'Admin':
+                    response = 'error: no such system'
+                    async with self.engine_lock:
+                        response = self.engine.info_system(system_name)
+                    await view.interaction.response.edit_message(content=response, view=None)
+                    return
+            # if admin is not selected or user is not admin then we fall through the above code
+            # and land at normal standard info command
+            if panel:
+                await view.interaction.response.edit_message(content='Not implemented for non-admins yet.', view=None) #ephemeral=True) #TODO Implement this
+                return
+            await interaction.response.send_message(content=f'Not implemented for non-admins yet.', ephemeral=True) #TODO IMPLEMENT THIS
+
+        #admin commands
+        if self.admin_id == None:
+            return
+        @tree.command(guild = discord.Object(id = self.config['IdleISS_Server']), name = 'inspect', description = 'Admin Only: Inspect a user')
+        @discord.app_commands.describe(username='The user to inspect')
+        async def inspect(interaction: discord.Interaction, username: str):
+            if interaction.user.id != self.admin_id:
+                await interaction.response.send_message(f'You do not have admin access.', ephemeral=True)
+                #TODO spam protection increment
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            if username[2] == '!': #<@!id> means there is a nickname for this server, this converts to non-nickname mode
+                username = username.removeprefix('<@!')
+                username = f'<@{username}'
+            response = 'error: no such user'
+            async with self.engine_lock:
+                response = self.engine.inspect_user(username)
+            await interaction.followup.send(response, ephemeral=True)
+
     async def on_ready(self):
         print('Logged on as {0}!'.format(self.user))
         await self.wait_until_ready()
-        if self.config.get('IdleISS_Discord_Server') != None:
+        if self.config.get('IdleISS_Server') != None:
             if not self.synced:
-                await self.tree.sync(guild = discord.Object(id = self.config['IdleISS_Discord_Server']))
+                await self.tree.sync(guild = discord.Object(id = self.config['IdleISS_Server']))
                 self.synced = True
                 print('IdleISS Server Commands Updated')
             if (
@@ -145,12 +216,12 @@ class PolyhedraClient(discord.Client):
     async def engine_heartbeat(self):
         updates = ''
         async with self.engine_lock:
-            #TODO: replace with full IdleISS interface
             channel = self.get_channel(int(self.config['IdleISS_Reports_Channel']))
             current_time = int(time.time())
             await channel.send(f'heartbeat: <t:{current_time}>') #debug
             mes_manager = self.engine.update_world(self.userlist, current_time)
             message_array = mes_manager.get_broadcasts_with_time_diff(current_time)
+            #TODO manage large event lists
             updates = '\n'.join(message_array)
             if updates != '':
                 await channel.send(f'Events:\n{updates}',allowed_mentions=None)
@@ -162,6 +233,28 @@ class PolyhedraClient(discord.Client):
             print('Direct Message with {0.author}: {0.content}'.format(message))
         else:
             print('#{0.channel}-{0.author}: {0.content}'.format(message))
+        #delete any message posted in IdleISS_Commands_Channel
+        if message.guild != None and message.channel != None:
+            if (
+                    message.channel.id == int(self.config.get('IdleISS_Commands_Channel', '0')) and
+                    message.guild.id == int(self.config.get('IdleISS_Server', '0')) and
+                    message.author.id != int(self.config.get('IdleISS_Admin', '0'))
+                ):
+                    counter = 0
+                    while counter <= 10:
+                        try:
+                            await message.delete()
+                            break
+                        except discord.Forbidden:
+                            print(f'Did not have access to delete a message in {message.channel} with ID:{message.channel.id}')
+                            raise
+                            break
+                        except discord.NotFound:
+                            break
+                        except discord.HTTPException as err:
+                            print(f'Failed to delete message in {message.channel}: {err.status} - {err.code} - {err.text}')
+                            await asyncio.sleep(60)
+                            counter += 1
         # example of responding to raw message_content, likely to be removed in later versions of discord API
         # if message.content.startswith('$hello'):
             # reply = 'Hello!'
@@ -221,7 +314,10 @@ def run():
         print(f'{config_file}: DiscordAPIKey value not found')
         return
 
-    print(f'Configured IdleISS Discord Server: {config.get("IdleISS_Discord_Server")}')
+    if config.get('IdleISS_Admin') == None:
+        print(f'{config_file}: IdleISS_Admin value not found, admin commands will be disabled')
+
+    print(f'Configured IdleISS Discord Server: {config.get("IdleISS_Server")}')
     #instance Client
     client = PolyhedraClient(config)
 

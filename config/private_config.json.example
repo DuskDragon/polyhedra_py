@@ -3,7 +3,9 @@
     "heartbeat_timeout": 150.0,
     "LoggingLevel": "NONE CRITICAL ERROR WARNING INFO DEBUG, pick one",
     "polyhedra_save_file": "output/save_file.json",
-    "IdleISS_Discord_Server": "serverIDnumber",
+    "IdleISS_Admin": "userIDnumber",
+    "IdleISS_Server": "serverIDnumber",
+    "IdleISS_Commands_Channel": "channelIDnumber",
     "IdleISS_Reports_Channel": "channelIDnumber",
     "IdleISS_Universe_Config": "config/Universe_Config.json",
     "IdleISS_Ships_Config": "config/Ships_Config.json"
