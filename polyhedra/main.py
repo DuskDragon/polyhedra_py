@@ -29,11 +29,34 @@ def is_present(a, x):
         return True
     return False
 
+#time tools
+def time_left(now, then):
+    'Converts epoch timestamps into {w}d, {x}h, {y}m, {z}s'
+    out = ''
+    diff = int(then - now)
+    if diff < 0:
+        return out
+    if diff == 0:
+        out = '1s'
+    day = int(diff/86400)
+    hr = int((diff%86400)/3600)
+    min = int((diff%3600)/60)
+    sec = int(diff%60)
+    if diff > 86400:
+        out = f'{day}d {hr}h {min}m {sec}s'
+    elif diff > 3600:
+        out = f'{hr}h {min}m {sec}s'
+    elif diff > 60:
+        out = f'{min}m {sec}s'
+    else:
+        out = f'{sec}s'
+    return out
+
 class Admin_Panel(discord.ui.View):
-    def __init__(self, interaction):
+    def __init__(self):
         self.selection = None
-        self.interaction = interaction
-        super().__init__(timeout=None)
+        self.interaction = None
+        super().__init__(timeout=600)
 
     @discord.ui.button(style=discord.ButtonStyle.green, label='Standard', custom_id='standard')
     async def select_standard(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -51,10 +74,60 @@ class Admin_Panel(discord.ui.View):
         self.interaction = interaction
         self.stop()
 
-    # async def on_timeout(self):
-        # if self.selection != None:
-            # return
-        # self.stop()
+    async def on_timeout(self):
+        self.stop()
+
+class Scanning_Panel(discord.ui.View):
+    def __init__(self, scan_timestamps, scan_recharges):
+        self.selection = None
+        self.interaction = None
+        super().__init__(timeout=600)
+        now = int(time.time())
+        low_time = int(scan_timestamps.get('low',0) + scan_recharges.get('low',0))
+        focus_time = int(scan_timestamps.get("focus",0) + scan_recharges.get("focus",0))
+        high_time = int(scan_timestamps.get("high",0) + scan_recharges.get("high",0))
+        if (now <= low_time):
+            for x in self.children:
+                if x.custom_id == 'low':
+                    x.disabled = True
+                    x.label = f'Recharging: {time_left(now,low_time)}'
+        if (now <= focus_time):
+            for x in self.children:
+                if x.custom_id == 'focus':
+                    x.disabled = True
+                    x.label = f'Recharging: {time_left(now,focus_time)}'
+        if (now <= high_time):
+            for x in self.children:
+                if x.custom_id == 'high':
+                    x.disabled = True
+                    x.label = f'Recharging: {time_left(now,high_time)}'
+
+    @discord.ui.button(style=discord.ButtonStyle.green, label='Low Energy Scan', custom_id='low')
+    async def select_low(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.selection != None:
+            return
+        self.selection = 'low'
+        self.interaction = interaction
+        self.stop()
+
+    @discord.ui.button(style=discord.ButtonStyle.blurple, label='Focused Scan', custom_id='focus')
+    async def select_focus(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.selection != None:
+            return
+        self.selection = 'focus'
+        self.interaction = interaction
+        self.stop()
+
+    @discord.ui.button(style=discord.ButtonStyle.red, label='High Energy Scan', custom_id='high')
+    async def select_high(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.selection != None:
+            return
+        self.selection = 'high'
+        self.interaction = interaction
+        self.stop()
+
+    async def on_timeout(self):
+        self.stop()
 
 class PolyhedraClient(discord.Client):
     def __init__(self, Config):
@@ -113,7 +186,6 @@ class PolyhedraClient(discord.Client):
         @tree.command(guild = discord.Object(id = self.home_server), name = 'register', description = 'Start Playing IdleISS')
         async def register(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True, thinking=True)
-            print(f'/register defered: <@{interaction.user.id}>') #debug
             present = True
             #grab engine_lock before modifying the userlist
             async with self.engine_lock:
@@ -128,11 +200,59 @@ class PolyhedraClient(discord.Client):
                 time_to_next_tick = (self.check_time - (int(time.time()) % heartbeat_step)) % heartbeat_step
             if not present:
                 await interaction.followup.send(f'Your fleet has been directed to place your first structure. The fleet is already in system and will align the structure\'s orbit with the local equatorial plane in about {time_to_next_tick+1} seconds.', ephemeral=True)
-                print(f'/register followup: <@{interaction.user.id}> added') #debug
             else:
                 await interaction.followup.send(f'You have already registered.', ephemeral=True)
-                print(f'/register followup: <@{interaction.user.id}> already exists') #debug
                 #TODO spam protection increment
+
+        @tree.command(guild = discord.Object(id = self.home_server), name = 'scan', description = 'Scan local space for signal returns to investigate.')
+        async def scan(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            async with self.engine_lock:
+                present = is_present(self.userlist, f'<@{interaction.user.id}>')
+                if not present:
+                    await interaction.followup.send('You are not registered. Please use /register to start playing IdleISS.', ephemeral=True)
+                    return
+            #todo implement into IdleISS, using these stubs for now
+            now = int(time.time())
+            scan_timestamps = {
+                'low': now-(2*((60*60)-(60*5))),
+                'focus': now-(2*((60*60*4)-(60*5*4))),
+                'high': now-(2*((60*60*24)-(60*5*24))),
+            }
+            scan_recharges = {
+                'low': ((60*60)-(60*5)),
+                'focus': ((60*60*4)-(60*5*4)),
+                'high': ((60*60*24)-(60*5*24)),
+            }
+            view = Scanning_Panel(scan_timestamps,scan_recharges)
+            await interaction.followup.send('Select scanning mode:', view=view, ephemeral=True)
+            await view.wait() # Wait for View to stop listening for input
+            if view.selection == None:
+                output = 'This interaction has timed out.'
+                await interaction.edit_original_message(content=output, view=None)
+                return
+            present = True
+            async with self.engine_lock:
+                output = ''
+                present = is_present(self.userlist, f'<@{interaction.user.id}>')
+                if not present:
+                    output = 'You are not registered. Please use /register to start playing IdleISS.'
+                #elif TODO validate user is not using the double command exploit
+                else:
+                    now = int(time.time())
+                    if view.selection == 'low':
+                        output = 'low result'
+                        pass #TODO
+                    elif view.selection == 'focus':
+                        output = 'focus result'
+                        pass #TODO
+                    elif view.selection == 'high':
+                        output = 'high result'
+                        pass #TODO
+                    else:
+                        output = 'timeout'
+                        pass #TODO? maybe replace with deleting the message?
+            await view.interaction.response.edit_message(content=output, view=None)
 
         @tree.command(guild = discord.Object(id = self.home_server), name = 'info', description = 'Display information about a specific solar system.')
         @discord.app_commands.describe(system_name='The solar system to inspect')
@@ -140,11 +260,13 @@ class PolyhedraClient(discord.Client):
             panel = False
             if interaction.user.id == self.admin_id:
                 panel = True
-                view = Admin_Panel(interaction)
+                view = Admin_Panel()
                 await interaction.response.send_message('Select mode:', view=view, ephemeral=True)
                 await view.wait() # Wait for View to stop listening for input
                 if view.selection == None:
-                    return #no way to update view currently
+                    output = 'This interaction has timed out.'
+                    await interaction.edit_original_message(content=output, view=None)
+                    return
                 if view.selection == 'Admin':
                     response = 'error: no such system'
                     async with self.engine_lock:
