@@ -70,6 +70,7 @@ class PolyhedraClient(discord.Client):
         self.engine = GameEngine(universe_filename, library_filename)
         self.engine_lock = asyncio.Lock()
         self.engine_is_ready = False
+        self.check_time = -1
         #idleiss debug
         print(''.join(self.engine.universe.debug_output))
         print(f"Universe successfully loaded from {universe_filename}")
@@ -122,8 +123,11 @@ class PolyhedraClient(discord.Client):
             #as soon as we are done interacting with IDLEISS release lock on IDLEISS
             #TODO update this text, perhaps with a config or "language pack"
             #TODO needs to be updated to interaction.followup.send
+            time_to_next_tick = 149
+            if self.check_time != -1:
+                time_to_next_tick = (self.check_time - (int(time.time()) % heartbeat_step)) % heartbeat_step
             if not present:
-                await interaction.followup.send(f'Your fleet has been dispached to construct your first structure.', ephemeral=True)
+                await interaction.followup.send(f'Your fleet has been directed to place your first structure. The fleet is already in system and will align the structure\'s orbit with the local equatorial plane in about {time_to_next_tick+1} seconds.', ephemeral=True)
                 print(f'/register followup: <@{interaction.user.id}> added') #debug
             else:
                 await interaction.followup.send(f'You have already registered.', ephemeral=True)
@@ -207,10 +211,12 @@ class PolyhedraClient(discord.Client):
             self._heartbeat_align.stop()
             return
         async with self.engine_lock:
+            check = int(time.time())
             if (
-                    int(time.time()) % heartbeat_step >= 10 and
-                    int(time.time()) % heartbeat_step <= 50
+                    check % heartbeat_step >= 10 and
+                    check % heartbeat_step <= 50
                 ):
+                self.check_time = check % heartbeat_step
                 self.engine_heartbeat.start()
                 self._heartbeat_align.stop()
 
