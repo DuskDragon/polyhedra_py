@@ -84,8 +84,8 @@ class Scanning_Panel(discord.ui.View):
         super().__init__(timeout=600)
         now = int(time.time())
         low_time = int(scan_timestamps.get('low',0) + scan_recharges.get('low',0))
-        focus_time = int(scan_timestamps.get("focus",0) + scan_recharges.get("focus",0))
-        high_time = int(scan_timestamps.get("high",0) + scan_recharges.get("high",0))
+        focus_time = int(scan_timestamps.get('focus',0) + scan_recharges.get('focus',0))
+        high_time = int(scan_timestamps.get('high',0) + scan_recharges.get('high',0))
         if (now <= low_time):
             for x in self.children:
                 if x.custom_id == 'low':
@@ -134,6 +134,7 @@ class PolyhedraClient(discord.Client):
         #config for both
         self.config = Config
         self.userlist = []
+        self._active_commands = {}
         self.admin_id = int(Config.get('IdleISS_Admin', '0'))
         self.home_server = int(Config.get('IdleISS_Server', '0'))
         self.quiet_channel = int(self.config.get('IdleISS_Commands_Channel', '0'))
@@ -146,9 +147,9 @@ class PolyhedraClient(discord.Client):
         self.check_time = -1
         #idleiss debug
         print(''.join(self.engine.universe.debug_output))
-        print(f"Universe successfully loaded from {universe_filename}")
-        print(f"Starships successfully loaded from {library_filename}: ")
-        print(f"\tImported {len(self.engine.library.ship_data)} ships")
+        print(f'Universe successfully loaded from {universe_filename}')
+        print(f'Starships successfully loaded from {library_filename}: ')
+        print(f'\tImported {len(self.engine.library.ship_data)} ships')
         #discord setup
         allowed_mentions = discord.AllowedMentions(roles=True, everyone=False, users=False)
         intents = discord.Intents(
@@ -174,14 +175,28 @@ class PolyhedraClient(discord.Client):
         self.tree = discord.app_commands.CommandTree(self)
         self.process_command_tree()
 
+    def _register_view(self, view, interaction):
+        """
+        Whenever an ephemeral view is generated it must be registered to that
+        user. This allows _register_view to stop all previous views in order
+        to make sure a user has only one active ephemeral view at a time.
+        """
+        #kill previous view instance
+        old_view = self._active_commands.get(f'<@{interaction.user.id}>', None)
+        if old_view != None:
+            old_view.stop()
+        # tag this view onto our current active command for this user
+        self._active_commands[f'<@{interaction.user.id}>'] = view
+        return view
+
     def process_command_tree(self):
         if self.home_server == 0:
             return
         tree = self.tree
 
-        @tree.command(guild = discord.Object(id = self.home_server), name = 'test', description = 'testing')
-        async def test(interaction: discord.Interaction):
-            await interaction.response.send_message(f'I am working! I was made with Discord.py', ephemeral=True)
+        # @tree.command(guild = discord.Object(id = self.home_server), name = 'test', description = 'testing')
+        # async def test(interaction: discord.Interaction):
+            # await interaction.response.send_message(f'I am working! I was made with Discord.py', ephemeral=True)
 
         @tree.command(guild = discord.Object(id = self.home_server), name = 'register', description = 'Start Playing IdleISS')
         async def register(interaction: discord.Interaction):
@@ -212,6 +227,7 @@ class PolyhedraClient(discord.Client):
                 if not present:
                     await interaction.followup.send('You are not registered. Please use /register to start playing IdleISS.', ephemeral=True)
                     return
+
             #todo implement into IdleISS, using these stubs for now
             now = int(time.time())
             scan_timestamps = {
@@ -224,7 +240,8 @@ class PolyhedraClient(discord.Client):
                 'focus': ((60*60*4)-(60*5*4)),
                 'high': ((60*60*24)-(60*5*24)),
             }
-            view = Scanning_Panel(scan_timestamps,scan_recharges)
+            view = self._register_view(Scanning_Panel(scan_timestamps,scan_recharges), interaction)
+            # display view and wait
             await interaction.followup.send('Select scanning mode:', view=view, ephemeral=True)
             await view.wait() # Wait for View to stop listening for input
             if view.selection == None:
@@ -237,21 +254,34 @@ class PolyhedraClient(discord.Client):
                 present = is_present(self.userlist, f'<@{interaction.user.id}>')
                 if not present:
                     output = 'You are not registered. Please use /register to start playing IdleISS.'
-                #elif TODO validate user is not using the double command exploit
+                # TODO validate user is not using the double command exploit
+                # pull updated timestamps again from GameEngine
                 else:
                     now = int(time.time())
                     if view.selection == 'low':
-                        output = 'low result'
-                        pass #TODO
+                        # using the updated GameEngine scan timeouts
+                        if False: #TODO
+                            output = 'too soon' #TODO
+                        else:
+                            output = 'low result'
+                            pass #TODO
                     elif view.selection == 'focus':
-                        output = 'focus result'
-                        pass #TODO
+                        # using the updated GameEngine scan timeouts
+                        if False: #TODO
+                            output = 'too soon' #TODO
+                        else:
+                            output = 'focus result'
+                            pass #TODO
                     elif view.selection == 'high':
-                        output = 'high result'
+                        # using the updated GameEngine scan timeouts
+                        if False: #TODO
+                            output = 'too soon' #TODO
+                        else:
+                            output = 'high result'
                         pass #TODO
                     else:
                         output = 'timeout'
-                        pass #TODO? maybe replace with deleting the message?
+                        pass
             await view.interaction.response.edit_message(content=output, view=None)
 
         @tree.command(guild = discord.Object(id = self.home_server), name = 'info', description = 'Display information about a specific solar system.')
@@ -260,7 +290,7 @@ class PolyhedraClient(discord.Client):
             panel = False
             if interaction.user.id == self.admin_id:
                 panel = True
-                view = Admin_Panel()
+                view = self._register_view(Admin_Panel(), interaction)
                 await interaction.response.send_message('Select mode:', view=view, ephemeral=True)
                 await view.wait() # Wait for View to stop listening for input
                 if view.selection == None:
@@ -398,7 +428,7 @@ def run():
     #load config
     config_file = 'config/private_config.json'
     config = None
-    with open(config_file, "r") as fd:
+    with open(config_file, 'r') as fd:
         config = json.load(fd)
         fd.close()
 
