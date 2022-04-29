@@ -47,6 +47,8 @@ output
 interpreter_log.txt
 interpreter_preload.txt
 discord.log
+save_file*.json
+save_file.json
 
 # pycharm
 .idea

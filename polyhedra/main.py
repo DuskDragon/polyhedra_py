@@ -1,11 +1,11 @@
 from idleiss.core import GameEngine
-import time
+from idleiss.core import InvalidSaveData
 import bisect
-
-#import argparse
-#import os
+import time
+import os
+import pathlib
 import json
-#import random
+#import argparse
 
 import discord
 from discord.ext import tasks
@@ -138,18 +138,6 @@ class PolyhedraClient(discord.Client):
         self.admin_id = int(Config.get('IdleISS_Admin', '0'))
         self.home_server = int(Config.get('IdleISS_Server', '0'))
         self.quiet_channel = int(self.config.get('IdleISS_Commands_Channel', '0'))
-        #idleiss interface
-        universe_filename = Config['IdleISS_Universe_Config']
-        library_filename = Config['IdleISS_Ships_Config']
-        self.engine = GameEngine(universe_filename, library_filename)
-        self.engine_lock = asyncio.Lock()
-        self.engine_is_ready = False
-        self.check_time = -1
-        #idleiss debug
-        print(''.join(self.engine.universe.debug_output))
-        print(f'Universe successfully loaded from {universe_filename}')
-        print(f'Starships successfully loaded from {library_filename}: ')
-        print(f'\tImported {len(self.engine.library.ship_data)} ships')
         #discord setup
         allowed_mentions = discord.AllowedMentions(roles=True, everyone=False, users=False)
         intents = discord.Intents(
@@ -164,7 +152,6 @@ class PolyhedraClient(discord.Client):
             emojis = True,
             reactions = True,
         )
-        self.synced = False
         self.tree = None
         super().__init__(
             intents=intents,
@@ -174,6 +161,14 @@ class PolyhedraClient(discord.Client):
         )
         self.tree = discord.app_commands.CommandTree(self)
         self.process_command_tree()
+        #this must be set before _load_from_savefile as it can be modified there
+        self.synced = False
+        #idleiss interface
+        savedata_filename = Config['Polyhedra_Savefile']
+        self._load_from_savefile(savedata_filename)
+        self.engine_lock = asyncio.Lock()
+        self.check_time = -1
+
 
     def _register_view(self, view, interaction):
         """
@@ -188,6 +183,55 @@ class PolyhedraClient(discord.Client):
         # tag this view onto our current active command for this user
         self._active_commands[f'<@{interaction.user.id}>'] = view
         return view
+
+    def _load_from_savefile(self, save_filename):
+        """
+        This function sets self.engine state based on the savefile
+        This is likely not the greatest implemenation.
+        TODO maybe clean it up eventually and/or rewrite it
+        """
+        save = None
+        universe_filename = self.config['IdleISS_Universe_Config']
+        library_filename = self.config['IdleISS_Ships_Config']
+        with open(save_filename, 'r') as fd:
+            save = json.load(fd)
+        if save == {}:
+            print(f'Polyhedra_Savefile is new. Generating fresh IdleISS instance...')
+            self.engine = GameEngine(universe_filename, library_filename, {})
+        else:
+            savedata_engine = save.get('engine', None)
+            savedata_userlist = save.get('userlist', None)
+            if ( #TODO move to validate function and make more robust
+                    savedata_engine == None or
+                    savedata_userlist == None
+                ):
+                raise InvalidSaveData(f'{save_filename} contains invalid save data, delete the file or replace with valid save data to continue.')
+            self.engine = GameEngine(universe_filename, library_filename, savedata_engine)
+            #TODO add more validation here before blindly copying over
+            self.userlist = savedata_userlist
+            print(f'Successfully loaded savefile: {save_filename}')
+            #TODO check if command tree matches saved file, if so then set self.synced = True
+        #idleiss load information
+        print(''.join(self.engine.universe.debug_output))
+        print(f'Universe successfully loaded from {universe_filename}')
+        print(f'Starships successfully loaded from {library_filename}: ')
+        print(f'\tImported {len(self.engine.library.ship_data)} ships')
+
+    def _populate_savefile(self, timestamp):
+        """
+        The function that calls this one must aquire a lock on self.engine_lock.
+        TODO: enforce this by moving it inside this?
+        """
+        engine_savedata = self.engine.generate_savedata()
+        savedata = {
+            'engine': engine_savedata,
+            'userlist': self.userlist,
+        }
+        #verify that dump doesn't fail before writing
+        testout = json.dumps(savedata, indent=4)
+        with open(self.config['Polyhedra_Savefile'], 'w') as fd:
+            fd.write(testout)
+        print(f'savefile generated at {timestamp}')
 
     def process_command_tree(self):
         if self.home_server == 0:
@@ -330,10 +374,11 @@ class PolyhedraClient(discord.Client):
             await interaction.followup.send(response, ephemeral=True)
 
     async def on_ready(self):
-        print('Logged on as {0}!'.format(self.user))
+        print(f'Logged on as {self.user}!')
         await self.wait_until_ready()
         if self.home_server != None:
             if not self.synced:
+                #TODO DO NOT UPDATE CONSTANTLY
                 await self.tree.sync(guild = discord.Object(id = self.home_server))
                 self.synced = True
                 print('IdleISS Server Commands Updated')
@@ -380,7 +425,11 @@ class PolyhedraClient(discord.Client):
             current_time = int(time.time())
             await channel.send(f'heartbeat: <t:{current_time}>') #debug
             mes_manager = self.engine.update_world(self.userlist, current_time)
+            self._populate_savefile(current_time)
             message_array = mes_manager.get_broadcasts_with_time_diff(current_time)
+            if not mes_manager.is_empty:
+                for x in mes_manager.container:
+                    print(f'{x[0]} {x[1]}: {x[2]}')
             #TODO manage large event lists
             updates = '\n'.join(message_array)
             if updates != '':
@@ -430,7 +479,6 @@ def run():
     config = None
     with open(config_file, 'r') as fd:
         config = json.load(fd)
-        fd.close()
 
     #validate polyhedra config
     #validation of IdleISS config done in GameEngine
@@ -443,14 +491,19 @@ def run():
     if config.get('IdleISS_Ships_Config') == None:
         print(f'{config_file} missing IdleISS_Ships_Config')
         return
-
-    #attempt IdleISS state from storage
-    if config.get('polyhedra_save_file') == None:
-        print(f'{config_file} missing polyhedra_save_file')
+    if config.get('Polyhedra_Savefile') == None:
+        print(f'{config_file} missing Polyhedra_Savefile location')
         return
-    #with open(config['polyhedra_save_file'], 'r') as fd:
-    #    json.load(fd)
-    #    fd.close()
+
+    #if Polyhedra_Savefile does not exist, create it:
+    savefile = pathlib.Path(config['Polyhedra_Savefile'])
+    savefile.touch(exist_ok=True)
+
+    #if the file is empty write an empty dictionary
+    if os.path.getsize(config['Polyhedra_Savefile']) == 0:
+        with open(config['Polyhedra_Savefile'], 'w') as fd:
+            print(f'Polyhedra_Savefile is empty. Creating new save.')
+            fd.write('{}')
 
     #setup logging
     logger = logging.getLogger('discord')
@@ -479,7 +532,7 @@ def run():
 
     print(f'Configured IdleISS Discord Server: {config.get("IdleISS_Server")}')
     #instance Client
-    client = PolyhedraClient(config)
+    client = PolyhedraClient(config) #, savefile) TODO
 
     #run Client
     client.run(config['DiscordAPIKey'])
