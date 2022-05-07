@@ -8,5 +8,7 @@
     "IdleISS_Commands_Channel": "channelIDnumber",
     "IdleISS_Reports_Channel": "channelIDnumber",
     "IdleISS_Universe_Config": "config/Universe_Config.json",
-    "IdleISS_Ships_Config": "config/Ships_Config.json"
+    "IdleISS_Ships_Config": "config/Ships_Config.json",
+    "IdleISS_Scan_Config": "config/Scan_Config.json",
+    "IdleISS_Debug_Mode": false
 }

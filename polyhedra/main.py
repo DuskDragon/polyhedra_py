@@ -11,6 +11,7 @@ import discord
 from discord.ext import tasks
 import logging
 import asyncio
+from random import Random
 
 heartbeat_step = 300 #seconds, minute aligned UTC timestamp aligned. Min = 120
 
@@ -83,20 +84,29 @@ class Scanning_Panel(discord.ui.View):
         self.interaction = None
         super().__init__(timeout=600)
         now = int(time.time())
-        low_time = int(scan_timestamps.get('low',0) + scan_recharges.get('low',0))
-        focus_time = int(scan_timestamps.get('focus',0) + scan_recharges.get('focus',0))
-        high_time = int(scan_timestamps.get('high',0) + scan_recharges.get('high',0))
-        if (now <= low_time):
+        if scan_timestamps.get('low') != None:
+            low_time = int(scan_timestamps.get('low',0) + scan_recharges.get('low',0))
+        else:
+            low_time = now-1
+        if scan_timestamps.get('focus') != None:
+            focus_time = int(scan_timestamps.get('focus',0) + scan_recharges.get('focus',0))
+        else:
+            focus_time = now-1
+        if scan_timestamps.get('high') != None:
+            high_time = int(scan_timestamps.get('high',0) + scan_recharges.get('high',0))
+        else:
+            high_time = now-1
+        if (now < low_time):
             for x in self.children:
                 if x.custom_id == 'low':
                     x.disabled = True
                     x.label = f'Recharging: {time_left(now,low_time)}'
-        if (now <= focus_time):
+        if (now < focus_time):
             for x in self.children:
                 if x.custom_id == 'focus':
                     x.disabled = True
                     x.label = f'Recharging: {time_left(now,focus_time)}'
-        if (now <= high_time):
+        if (now < high_time):
             for x in self.children:
                 if x.custom_id == 'high':
                     x.disabled = True
@@ -129,6 +139,65 @@ class Scanning_Panel(discord.ui.View):
     async def on_timeout(self):
         self.stop()
 
+class FocusButton(discord.ui.Button['FocusedScan']):
+    def __init__(self, view, x: int, y: int, value: int):
+        #A View can only contain up to 5 rows -- each row can only have 5 buttons.
+        self.value = value
+        label = f'{value}'
+        super().__init__(style=discord.ButtonStyle.blurple, label=label, row=y)
+        self.x = x
+        self.y = y
+        self.parent_view = view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.select(self.x, self.y, self.value, interaction, self)
+
+class Scanning_Focus_Panel(discord.ui.View):
+    children: list[FocusButton]
+
+    def __init__(self, x_max: int, y_max: int):
+        super().__init__(timeout=600)
+        self.x_max = x_max
+        self.y_max = y_max
+        self.sel_x = None
+        self.sel_y = None
+        self.interaction = None
+        self.logical_scan_grid = [[None for x in range(x_max)] for y in range(y_max)]
+        for col in range(x_max):
+            for row in range(y_max):
+                value = (col+1)+((row)*x_max)
+                temp_button = FocusButton(self, col, row, value)
+                self.logical_scan_grid[row][col] = temp_button
+                self.add_item(temp_button)
+
+    def select(self, x: int, y: int, value: int, interaction: discord.Interaction, button: FocusButton):
+        self.interaction = interaction
+        self.sel_x = x
+        self.sel_y = y
+        self.selection = value
+        #for now we just set the selected one RED
+        button.label = 'X'
+        button.style = discord.ButtonStyle.red
+        for child in self.children:
+            child.disabled = True
+        self.stop()
+
+    def populate_results(self, results):
+        for row in range(self.y_max):
+            for col in range(self.x_max):
+                if results[row][col] == "red":
+                    self.logical_scan_grid[row][col].style = discord.ButtonStyle.red
+                elif results[row][col] == "green":
+                    self.logical_scan_grid[row][col].style = discord.ButtonStyle.green
+                elif results[row][col] == "grey":
+                    self.logical_scan_grid[row][col].style = discord.ButtonStyle.grey
+        self.stop()
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        self.stop()
+
 class PolyhedraClient(discord.Client):
     def __init__(self, Config):
         #config for both
@@ -138,6 +207,7 @@ class PolyhedraClient(discord.Client):
         self.admin_id = int(Config.get('IdleISS_Admin', '0'))
         self.home_server = int(Config.get('IdleISS_Server', '0'))
         self.quiet_channel = int(self.config.get('IdleISS_Commands_Channel', '0'))
+        self.debug = Config.get('IdleISS_Debug_Mode', False)
         #discord setup
         allowed_mentions = discord.AllowedMentions(roles=True, everyone=False, users=False)
         intents = discord.Intents(
@@ -168,6 +238,8 @@ class PolyhedraClient(discord.Client):
         self._load_from_savefile(savedata_filename)
         self.engine_lock = asyncio.Lock()
         self.check_time = -1
+        self.transient_random = Random()
+        self.transient_random.seed()
 
 
     def _register_view(self, view, interaction):
@@ -193,11 +265,12 @@ class PolyhedraClient(discord.Client):
         save = None
         universe_filename = self.config['IdleISS_Universe_Config']
         library_filename = self.config['IdleISS_Ships_Config']
+        scanning_filename = self.config['IdleISS_Scan_Config']
         with open(save_filename, 'r') as fd:
             save = json.load(fd)
         if save == {}:
             print(f'Polyhedra_Savefile is new. Generating fresh IdleISS instance...')
-            self.engine = GameEngine(universe_filename, library_filename, {})
+            self.engine = GameEngine(universe_filename, library_filename, scanning_filename, {})
         else:
             savedata_engine = save.get('engine', None)
             savedata_userlist = save.get('userlist', None)
@@ -206,7 +279,7 @@ class PolyhedraClient(discord.Client):
                     savedata_userlist == None
                 ):
                 raise InvalidSaveData(f'{save_filename} contains invalid save data, delete the file or replace with valid save data to continue.')
-            self.engine = GameEngine(universe_filename, library_filename, savedata_engine)
+            self.engine = GameEngine(universe_filename, library_filename, scanning_filename, savedata_engine)
             #TODO add more validation here before blindly copying over
             self.userlist = savedata_userlist
             print(f'Successfully loaded savefile: {save_filename}')
@@ -266,67 +339,114 @@ class PolyhedraClient(discord.Client):
         @tree.command(guild = discord.Object(id = self.home_server), name = 'scan', description = 'Scan local space for signal returns to investigate.')
         async def scan(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True, thinking=True)
+            scan_recharges = {
+                'low': self.engine.scanning.settings.low_recharge,
+                'focus': self.engine.scanning.settings.focus_recharge,
+                'high': self.engine.scanning.settings.high_recharge,
+            }
+            end_early = False
             async with self.engine_lock:
                 present = is_present(self.userlist, f'<@{interaction.user.id}>')
                 if not present:
-                    await interaction.followup.send('You are not registered. Please use /register to start playing IdleISS.', ephemeral=True)
-                    return
-
-            #todo implement into IdleISS, using these stubs for now
-            now = int(time.time())
-            scan_timestamps = {
-                'low': now-(2*((60*60)-(60*5))),
-                'focus': now-(2*((60*60*4)-(60*5*4))),
-                'high': now-(2*((60*60*24)-(60*5*24))),
-            }
-            scan_recharges = {
-                'low': ((60*60)-(60*5)),
-                'focus': ((60*60*4)-(60*5*4)),
-                'high': ((60*60*24)-(60*5*24)),
-            }
-            view = self._register_view(Scanning_Panel(scan_timestamps,scan_recharges), interaction)
-            # display view and wait
-            await interaction.followup.send('Select scanning mode:', view=view, ephemeral=True)
-            await view.wait() # Wait for View to stop listening for input
-            if view.selection == None:
+                    output = 'You are not registered. Please use /register to start playing IdleISS. You will need to wait until your first building is constructed.'
+                    end_early = True
+                elif not f'<@{interaction.user.id}>' in self.engine.users:
+                    output = 'Please wait until your first building is constructed.'
+                    end_early = True
+                if not end_early: # get timestamps with lock
+                    now = int(time.time())
+                    scan_timestamps = {
+                        'low': self.engine.users[f'<@{interaction.user.id}>'].last_low_scan,
+                        'focus': self.engine.users[f'<@{interaction.user.id}>'].last_focus_scan,
+                        'high': self.engine.users[f'<@{interaction.user.id}>'].last_high_scan,
+                    }
+            # let go of self.engine_lock
+            #send end_early message if needed
+            if end_early: #don't want to await while holding engine_lock
+                await interaction.followup.send(output, ephemeral=True)
+                return
+            # generate view for scanning
+            scan_view = self._register_view(Scanning_Panel(scan_timestamps,scan_recharges), interaction)
+            # display scanning view and wait
+            await interaction.followup.send('Select scanning mode:', view=scan_view, ephemeral=True)
+            await scan_view.wait() # Wait for scan_view to stop listening for input
+            # check for timeout on scan_view
+            if scan_view.selection == None:
                 output = 'This interaction has timed out.'
                 await interaction.edit_original_message(content=output, view=None)
                 return
             present = True
+            next_interaction = scan_view.interaction
+            next_interaction_type = 'r' #response.edit_message
+            # if scan type is focus we need more information
+            if scan_view.selection == 'focus':
+                focus_view = self._register_view(Scanning_Focus_Panel(
+                    self.engine.scanning.settings.focus_width_max,
+                    self.engine.scanning.settings.focus_height_max), interaction
+                )
+                output = 'Select Scanning Frequency to Focus on:'
+                await scan_view.interaction.response.edit_message(content=output, view=focus_view)
+                await focus_view.wait() #wait for new focus_view to stop listening
+                if focus_view.selection == None:
+                    output = 'This interaction has timed out.'
+                    await interaction.edit_original_message(content=output, view=None)
+                    return
+                if focus_view.selection != None and focus_view.interaction != None:
+                    output = 'Scanning Frequency Selected'
+                    await focus_view.interaction.response.defer(ephemeral=True, thinking=True)
+                    await interaction.edit_original_message(content=output, view=focus_view)
+                    target_freq = (focus_view.selection, focus_view.sel_x, focus_view.sel_y)
+                    next_interaction = focus_view.interaction
+                    next_interaction_type = 'f' #followup.send
+                else:
+                    output = 'This interaction has encountered an error. Let Icosa know with code SCAN#583-3N' #lmao
+                    await interaction.edit_original_message(content=output, view=None)
+            else:
+                focus_view = None
+                target_freq = None
+            #at this point we have all information to execute a scan
+            #grab engine_lock and update scan timestamps, and return scanned sites
+            #tag the scanned sites to the player's history so they can send fleets
             async with self.engine_lock:
                 output = ''
                 present = is_present(self.userlist, f'<@{interaction.user.id}>')
                 if not present:
-                    output = 'You are not registered. Please use /register to start playing IdleISS.'
-                # TODO validate user is not using the double command exploit
-                # pull updated timestamps again from GameEngine
-                else:
-                    now = int(time.time())
-                    if view.selection == 'low':
-                        # using the updated GameEngine scan timeouts
-                        if False: #TODO
-                            output = 'too soon' #TODO
-                        else:
-                            output = 'low result'
-                            pass #TODO
-                    elif view.selection == 'focus':
-                        # using the updated GameEngine scan timeouts
-                        if False: #TODO
-                            output = 'too soon' #TODO
-                        else:
-                            output = 'focus result'
-                            pass #TODO
-                    elif view.selection == 'high':
-                        # using the updated GameEngine scan timeouts
-                        if False: #TODO
-                            output = 'too soon' #TODO
-                        else:
-                            output = 'high result'
-                        pass #TODO
+                    output = 'You are not registered. Please use /register to start playing IdleISS. You will need to wait until your first building is constructed.'
+                    await next_interaction.response.edit_message(content=output, view=None)
+                    return
+                if not f'<@{interaction.user.id}>' in self.engine.users:
+                    await next_interaction.response.edit_message('Please wait until your first building is constructed.', ephemeral=True)
+                    return
+                now = int(time.time())
+                #scan_recharges
+                scan_timestamps = {
+                    'low': self.engine.users[f'<@{interaction.user.id}>'].last_low_scan,
+                    'focus': self.engine.users[f'<@{interaction.user.id}>'].last_focus_scan,
+                    'high': self.engine.users[f'<@{interaction.user.id}>'].last_high_scan,
+                }
+                valid_times = {}
+                for k, v in scan_timestamps.items():
+                    if v is None:
+                        valid_times[k] = now-1
                     else:
-                        output = 'timeout'
-                        pass
-            await view.interaction.response.edit_message(content=output, view=None)
+                        valid_times[k] = scan_timestamps[k] + scan_recharges[k]
+                if now < valid_times[scan_view.selection]:
+                    output = 'You are scanning too soon since your last scan of this type, please try again later.'
+                else:
+                    output, focus_result = self.engine.scan(
+                        self.transient_random,
+                        now,
+                        f'<@{interaction.user.id}>',
+                        scan_view.selection,
+                        target_freq
+                    )
+            # drop engine lock now that we have everything and have updated gameengine
+            if next_interaction_type == 'r':
+                await next_interaction.response.edit_message(content=output, view=None)
+            else: #next_interaction_type == 'f' this means we used focus_view
+                focus_view.populate_results(focus_result)
+                await interaction.edit_original_message(content='Scanning Frequency Selected', view=focus_view)
+                await next_interaction.followup.send(content=output)
 
         @tree.command(guild = discord.Object(id = self.home_server), name = 'info', description = 'Display information about a specific solar system.')
         @discord.app_commands.describe(system_name='The solar system to inspect')
@@ -357,6 +477,7 @@ class PolyhedraClient(discord.Client):
         #admin commands
         if self.admin_id == 0:
             return
+        #admin only commands past this point
         @tree.command(guild = discord.Object(id = self.home_server), name = 'inspect', description = 'Admin Only: Inspect a user')
         @discord.app_commands.describe(username='The user to inspect')
         async def inspect(interaction: discord.Interaction, username: str):
@@ -372,6 +493,35 @@ class PolyhedraClient(discord.Client):
             async with self.engine_lock:
                 response = self.engine.inspect_user(username)
             await interaction.followup.send(response, ephemeral=True)
+
+        #admin only commands still
+        #now we check for admin debug commands
+        if not self.debug:
+            return
+        #admin only and debug only commands past this point
+        @tree.command(guild = discord.Object(id = self.home_server), name = 'resetscan', description = 'Admin Only: reset scan cooldowns for a user')
+        @discord.app_commands.describe(username='The user to inspect')
+        async def resetscan(interaction: discord.Interaction, username: str):
+            if interaction.user.id != self.admin_id:
+                await interaction.response.send_message(f'You do not have admin access.', ephemeral=True)
+                #TODO spam protection increment
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            if username[2] == '!': #<@!id> means there is a nickname for this server, this converts to non-nickname mode
+                username = username.removeprefix('<@!')
+                username = f'<@{username}'
+            async with self.engine_lock:
+                present = is_present(self.userlist, username)
+                if not present:
+                    output = 'User is not registered.'
+                elif not f'<@{interaction.user.id}>' in self.engine.users:
+                    output = 'User\'s first building has not been built yet.'
+                else:
+                    self.engine.users[username].last_low_scan = None
+                    self.engine.users[username].last_focus_scan = None
+                    self.engine.users[username].last_high_scan = None
+                    output = f'{username} scan timers have been cleared.'
+            await interaction.followup.send(output, ephemeral=True)
 
     async def on_ready(self):
         print(f'Logged on as {self.user}!')
@@ -486,10 +636,13 @@ def run():
         print(f'{config_file} not found or empty')
         return
     if config.get('IdleISS_Universe_Config') == None:
-        print(f'{config_file} missing IdleISS_Universe_Config')
+        print(f'{config_file} missing IdleISS_Universe_Config location')
         return
     if config.get('IdleISS_Ships_Config') == None:
-        print(f'{config_file} missing IdleISS_Ships_Config')
+        print(f'{config_file} missing IdleISS_Ships_Config location')
+        return
+    if config.get('IdleISS_Scan_Config') == None:
+        print(f'{config_file} missing IdleISS_Scan_Config location')
         return
     if config.get('Polyhedra_Savefile') == None:
         print(f'{config_file} missing Polyhedra_Savefile location')
@@ -529,6 +682,12 @@ def run():
 
     if config.get('IdleISS_Admin') == None:
         print(f'{config_file}: IdleISS_Admin value not found, admin commands will be disabled')
+
+    if config.get('IdleISS_Debug_Mode') == None or config.get('IdleISS_Debug_Mode') == False:
+        config['IdleISS_Debug_Mode'] = False
+        print(f'IdleISS configured for normal mode, debug commands disabled.')
+    elif config.get('IdleISS_Debug_Mode') == True:
+        print(f'IdleISS configured for DEBUG mode, debug commands ENABLED.')
 
     print(f'Configured IdleISS Discord Server: {config.get("IdleISS_Server")}')
     #instance Client
