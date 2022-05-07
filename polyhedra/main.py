@@ -241,7 +241,6 @@ class PolyhedraClient(discord.Client):
         self.transient_random = Random()
         self.transient_random.seed()
 
-
     def _register_view(self, view, interaction):
         """
         Whenever an ephemeral view is generated it must be registered to that
@@ -346,6 +345,7 @@ class PolyhedraClient(discord.Client):
             }
             end_early = False
             async with self.engine_lock:
+                now = int(time.time())
                 present = is_present(self.userlist, f'<@{interaction.user.id}>')
                 if not present:
                     output = 'You are not registered. Please use /register to start playing IdleISS. You will need to wait until your first building is constructed.'
@@ -354,7 +354,6 @@ class PolyhedraClient(discord.Client):
                     output = 'Please wait until your first building is constructed.'
                     end_early = True
                 if not end_early: # get timestamps with lock
-                    now = int(time.time())
                     scan_timestamps = {
                         'low': self.engine.users[f'<@{interaction.user.id}>'].last_low_scan,
                         'focus': self.engine.users[f'<@{interaction.user.id}>'].last_focus_scan,
@@ -367,7 +366,7 @@ class PolyhedraClient(discord.Client):
                 return
             # generate view for scanning
             scan_view = self._register_view(Scanning_Panel(scan_timestamps,scan_recharges), interaction)
-            # display scanning view and wait
+            # display scanning view and wait, "now" will need updating
             await interaction.followup.send('Select scanning mode:', view=scan_view, ephemeral=True)
             await scan_view.wait() # Wait for scan_view to stop listening for input
             # check for timeout on scan_view
@@ -417,29 +416,15 @@ class PolyhedraClient(discord.Client):
                 if not f'<@{interaction.user.id}>' in self.engine.users:
                     await next_interaction.response.edit_message('Please wait until your first building is constructed.', ephemeral=True)
                     return
-                now = int(time.time())
+                now = int(time.time()) #update time since we have await-ed since last update
                 #scan_recharges
-                scan_timestamps = {
-                    'low': self.engine.users[f'<@{interaction.user.id}>'].last_low_scan,
-                    'focus': self.engine.users[f'<@{interaction.user.id}>'].last_focus_scan,
-                    'high': self.engine.users[f'<@{interaction.user.id}>'].last_high_scan,
-                }
-                valid_times = {}
-                for k, v in scan_timestamps.items():
-                    if v is None:
-                        valid_times[k] = now-1
-                    else:
-                        valid_times[k] = scan_timestamps[k] + scan_recharges[k]
-                if now < valid_times[scan_view.selection]:
-                    output = 'You are scanning too soon since your last scan of this type, please try again later.'
-                else:
-                    output, focus_result = self.engine.scan(
-                        self.transient_random,
-                        now,
-                        f'<@{interaction.user.id}>',
-                        scan_view.selection,
-                        target_freq
-                    )
+                output, focus_result = self.engine.scan(
+                    self.transient_random,
+                    now,
+                    f'<@{interaction.user.id}>',
+                    scan_view.selection,
+                    target_freq
+                )
             # drop engine lock now that we have everything and have updated gameengine
             if next_interaction_type == 'r':
                 await next_interaction.response.edit_message(content=output, view=None)
