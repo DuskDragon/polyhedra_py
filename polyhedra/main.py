@@ -183,6 +183,16 @@ class Scanning_Focus_Panel(discord.ui.View):
         self.stop()
 
     def populate_results(self, results):
+        # if result is invalid due to cooldown error, disable everything
+        if results == None:
+            for child in self.children:
+                child.disabled = True
+            for row in range(self.y_max):
+                for col in range(self.x_max):
+                    self.logical_scan_grid[row][col].style = discord.ButtonStyle.grey
+            self.stop()
+            return
+        # if result is valid:
         for row in range(self.y_max):
             for col in range(self.x_max):
                 if results[row][col] == "red":
@@ -430,7 +440,11 @@ class PolyhedraClient(discord.Client):
             # drop engine lock now that we have everything and have updated gameengine
             if next_interaction_type == 'r':
                 await next_interaction.response.edit_message(content=output, view=None)
-            else: #next_interaction_type == 'f' this means we used focus_view
+            else: # next_interaction_type == 'f' this means we used focus_view
+                if focus_result == None:
+                    # scan cooldown was not available
+                    await next_interaction.response.edit_message(content=output, view=None)
+                    return
                 focus_view.populate_results(focus_result)
                 await interaction.edit_original_message(content='Scanning Frequency Selected', view=focus_view)
                 await next_interaction.followup.send(content=output)
@@ -560,7 +574,8 @@ class PolyhedraClient(discord.Client):
         async with self.engine_lock:
             channel = self.get_channel(int(self.config['IdleISS_Reports_Channel']))
             current_time = int(time.time())
-            await channel.send(f'heartbeat: <t:{current_time}>') #debug
+            if self.debug:
+                await channel.send(f'heartbeat: <t:{current_time}>')
             mes_manager = self.engine.update_world(self.userlist, current_time)
             self._populate_savefile(current_time)
             message_array = mes_manager.get_broadcasts_with_time_diff(current_time)
