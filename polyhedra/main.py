@@ -16,14 +16,14 @@ from random import Random
 heartbeat_step = 300 #seconds, minute aligned UTC timestamp aligned. Min = 120
 
 #bisect tools
-def index(a, x):
+def bisect_index(a, x):
     'Locate the leftmost value in sorted list a exactly equal to x'
     i = bisect.bisect_left(a, x)
     if i != len(a) and a[i] == x:
         return i
     return None
 
-def is_present(a, x):
+def bisect_is_present(a, x):
     'Return if sorted list a contains x'
     i = bisect.bisect_left(a, x)
     if i != len(a) and a[i] == x:
@@ -278,6 +278,8 @@ class PolyhedraClient(discord.Client):
                     savedata_userlist == None
                 ):
                 raise InvalidSaveData(f'{save_filename} contains invalid save data, delete the file or replace with valid save data to continue.')
+            if savedata_engine["world_timestamp"] > int(time.time()):
+                raise InvalidSaveData(f'{save_filename} contains a world_timestamp in the future. Delete the file or replace it with valid save data to continue.')
             self.engine = GameEngine(universe_filename, library_filename, scanning_filename, savedata_engine)
             #TODO add more validation here before blindly copying over
             self.userlist = savedata_userlist
@@ -320,7 +322,7 @@ class PolyhedraClient(discord.Client):
             present = True
             #grab engine_lock before modifying the userlist
             async with self.engine_lock:
-                present = is_present(self.userlist, f'<@{interaction.user.id}>')
+                present = bisect_is_present(self.userlist, f'<@{interaction.user.id}>')
                 if not present:
                     bisect.insort(self.userlist, f'<@{interaction.user.id}>')
             #as soon as we are done interacting with IDLEISS release lock on IDLEISS
@@ -346,7 +348,7 @@ class PolyhedraClient(discord.Client):
             end_early = False
             async with self.engine_lock:
                 now = int(time.time())
-                present = is_present(self.userlist, f'<@{interaction.user.id}>')
+                present = bisect_is_present(self.userlist, f'<@{interaction.user.id}>')
                 if not present:
                     output = 'You are not registered. Please use /register to start playing IdleISS. You will need to wait until your first building is constructed.'
                     end_early = True
@@ -408,7 +410,7 @@ class PolyhedraClient(discord.Client):
             #tag the scanned sites to the player's history so they can send fleets
             async with self.engine_lock:
                 output = ''
-                present = is_present(self.userlist, f'<@{interaction.user.id}>')
+                present = bisect_is_present(self.userlist, f'<@{interaction.user.id}>')
                 if not present:
                     output = 'You are not registered. Please use /register to start playing IdleISS. You will need to wait until your first building is constructed.'
                     await next_interaction.response.edit_message(content=output, view=None)
@@ -496,7 +498,7 @@ class PolyhedraClient(discord.Client):
                 username = username.removeprefix('<@!')
                 username = f'<@{username}'
             async with self.engine_lock:
-                present = is_present(self.userlist, username)
+                present = bisect_is_present(self.userlist, username)
                 if not present:
                     output = 'User is not registered.'
                 elif not f'<@{interaction.user.id}>' in self.engine.users:
