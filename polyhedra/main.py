@@ -13,7 +13,9 @@ import logging
 import asyncio
 from random import Random
 
-heartbeat_step = 300 #seconds, minute aligned UTC timestamp aligned. Min = 120
+HEARTBEAT_STEP = 300 #seconds, minute aligned UTC timestamp aligned. Min = 120
+MAX_CONTENT_LENGTH = 2000 #characters in Discord messages
+
 
 #bisect tools
 def bisect_index(a, x):
@@ -340,7 +342,7 @@ class PolyhedraClient(discord.Client):
             #TODO needs to be updated to interaction.followup.send
             time_to_next_tick = 149
             if self.check_time != -1:
-                time_to_next_tick = (self.check_time - (int(time.time()) % heartbeat_step)) % heartbeat_step
+                time_to_next_tick = (self.check_time - (int(time.time()) % HEARTBEAT_STEP)) % HEARTBEAT_STEP
             if not present:
                 await interaction.followup.send(f'Your fleet has been directed to place your first structure. The fleet is already in system and will align the structure\'s orbit with the local equatorial plane in about {time_to_next_tick+1} seconds.', ephemeral=True)
             else:
@@ -447,7 +449,30 @@ class PolyhedraClient(discord.Client):
                     return
                 focus_view.populate_results(focus_result)
                 await interaction.edit_original_message(content='Scanning Frequency Selected', view=focus_view)
-                await next_interaction.followup.send(content=output)
+                await next_interaction.followup.send(content=output, ephemeral=True)
+
+        @tree.command(guild = discord.Object(id = self.home_server), name = 'destinations', description = 'Display list of available destinations.')
+        async def destinations(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            end_early = False
+            async with self.engine_lock:
+                present = bisect_is_present(self.userlist, f'<@{interaction.user.id}>')
+                if not present:
+                    output = 'You are not registered. Please use /register to start playing IdleISS. You will need to wait until your first building is constructed.'
+                    end_early = True
+                elif not f'<@{interaction.user.id}>' in self.engine.users:
+                    output = 'Please wait until your first building is constructed.'
+                    end_early = True
+                if not end_early:
+                    destination_message_array = self.engine.user_destinations(f'<@{interaction.user.id}>', MAX_CONTENT_LENGTH, 3)
+            # release self.engine_lock
+            # send end_early message and return if needed
+            if end_early:
+                await interaction.followup.send(output, ephemeral=True)
+                return
+            for message in destination_message_array:
+                await interaction.followup.send(content=message, ephemeral=True)
+
 
         @tree.command(guild = discord.Object(id = self.home_server), name = 'info', description = 'Display information about a specific solar system.')
         @discord.app_commands.describe(system_name='The solar system to inspect')
@@ -553,7 +578,7 @@ class PolyhedraClient(discord.Client):
             print('No Discord Server ID in config file, cannot load slash commands to server.')
             print(f'Invite: https://discordapp.com/oauth2/authorize?client_id={self.user.id}&scope=bot&permissions=10737536064&scope=bot%20applications.commands')
 
-    @tasks.loop(seconds=0.5, count=(int(heartbeat_step)*2)+1, reconnect=True)
+    @tasks.loop(seconds=0.5, count=(int(HEARTBEAT_STEP)*2)+1, reconnect=True)
     async def _heartbeat_align(self):
         if self.engine_heartbeat.is_running():
             self._heartbeat_align.stop()
@@ -561,14 +586,14 @@ class PolyhedraClient(discord.Client):
         async with self.engine_lock:
             check = int(time.time())
             if (
-                    check % heartbeat_step >= 10 and
-                    check % heartbeat_step <= 50
+                    check % HEARTBEAT_STEP >= 10 and
+                    check % HEARTBEAT_STEP <= 50
                 ):
-                self.check_time = check % heartbeat_step
+                self.check_time = check % HEARTBEAT_STEP
                 self.engine_heartbeat.start()
                 self._heartbeat_align.stop()
 
-    @tasks.loop(minutes=float(heartbeat_step/60), count=None, reconnect=True)
+    @tasks.loop(minutes=float(HEARTBEAT_STEP/60), count=None, reconnect=True)
     async def engine_heartbeat(self):
         updates = ''
         async with self.engine_lock:
