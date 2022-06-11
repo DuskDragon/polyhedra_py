@@ -9,6 +9,7 @@ import json
 
 import discord
 from discord.ext import tasks
+from typing import Optional
 import logging
 import asyncio
 from random import Random
@@ -324,10 +325,6 @@ class PolyhedraClient(discord.Client):
             return
         tree = self.tree
 
-        # @tree.command(guild = discord.Object(id = self.home_server), name = 'test', description = 'testing')
-        # async def test(interaction: discord.Interaction):
-            # await interaction.response.send_message(f'I am working! I was made with Discord.py', ephemeral=True)
-
         @tree.command(guild = discord.Object(id = self.home_server), name = 'register', description = 'Start Playing IdleISS')
         async def register(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True, thinking=True)
@@ -339,7 +336,6 @@ class PolyhedraClient(discord.Client):
                     bisect.insort(self.userlist, f'<@{interaction.user.id}>')
             #as soon as we are done interacting with IDLEISS release lock on IDLEISS
             #TODO update this text, perhaps with a config or "language pack"
-            #TODO needs to be updated to interaction.followup.send
             time_to_next_tick = 149
             if self.check_time != -1:
                 time_to_next_tick = (self.check_time - (int(time.time()) % HEARTBEAT_STEP)) % HEARTBEAT_STEP
@@ -452,7 +448,9 @@ class PolyhedraClient(discord.Client):
                 await next_interaction.followup.send(content=output, ephemeral=True)
 
         @tree.command(guild = discord.Object(id = self.home_server), name = 'destinations', description = 'Display list of available destinations.')
-        async def destinations(interaction: discord.Interaction):
+        @discord.app_commands.rename(dest_selection='selection')
+        @discord.app_commands.describe(dest_selection='Selected Destination - do not include this argument to display all destinations')
+        async def destinations(interaction: discord.Interaction, dest_selection: Optional[int]):
             await interaction.response.defer(ephemeral=True, thinking=True)
             end_early = False
             async with self.engine_lock:
@@ -463,16 +461,21 @@ class PolyhedraClient(discord.Client):
                 elif not f'<@{interaction.user.id}>' in self.engine.users:
                     output = 'Please wait until your first building is constructed.'
                     end_early = True
-                if not end_early:
-                    destination_message_array = self.engine.user_destinations(f'<@{interaction.user.id}>', MAX_CONTENT_LENGTH, 3)
             # release self.engine_lock
             # send end_early message and return if needed
             if end_early:
                 await interaction.followup.send(output, ephemeral=True)
                 return
+            # if command was sent with a destination selected
+            if dest_selection != None:
+                await self.specific_destination(interaction, dest_selection)
+                return
+            # regrab self.engine_lock
+            destination_message_array = []
+            async with self.engine_lock:
+                destination_message_array = self.engine.user_destinations(int(time.time()), f'<@{interaction.user.id}>', MAX_CONTENT_LENGTH, 3)
             for message in destination_message_array:
                 await interaction.followup.send(content=message, ephemeral=True)
-
 
         @tree.command(guild = discord.Object(id = self.home_server), name = 'info', description = 'Display information about a specific solar system.')
         @discord.app_commands.describe(system_name='The solar system to inspect')
@@ -506,7 +509,7 @@ class PolyhedraClient(discord.Client):
         #admin only commands past this point
         @tree.command(guild = discord.Object(id = self.home_server), name = 'inspect', description = 'Admin Only: Inspect a user')
         @discord.app_commands.describe(username='The user to inspect')
-        async def inspect(interaction: discord.Interaction, username: str):
+        async def inspect(interaction: discord.Interaction, username: discord.Member):
             if interaction.user.id != self.admin_id:
                 await interaction.response.send_message(f'You do not have admin access.', ephemeral=True)
                 #TODO spam protection increment
@@ -527,7 +530,7 @@ class PolyhedraClient(discord.Client):
         #admin only and debug only commands past this point
         @tree.command(guild = discord.Object(id = self.home_server), name = 'resetscan', description = 'Admin Only: reset scan cooldowns for a user')
         @discord.app_commands.describe(username='The user to inspect')
-        async def resetscan(interaction: discord.Interaction, username: str):
+        async def resetscan(interaction: discord.Interaction, username: discord.Member):
             if interaction.user.id != self.admin_id:
                 await interaction.response.send_message(f'You do not have admin access.', ephemeral=True)
                 #TODO spam protection increment
@@ -612,13 +615,16 @@ class PolyhedraClient(discord.Client):
             if updates != '':
                 await channel.send(f'Events:\n{updates}',allowed_mentions=None)
 
+    async def specific_destination(self, interaction: discord.Interaction, dest_selection: int):
+        await interaction.followup.send(content = f'specific desto was: {dest_selection}', ephemeral =True)
+
     async def on_message(self, message):
         if message.author == self.user:
             return
         if message.guild == None:
-            print('Direct Message with {0.author}: {0.content}'.format(message))
+            print(f'Direct Message with {message.author}: {message.content}')
         else:
-            print('#{0.channel}-{0.author}: {0.content}'.format(message))
+            print(f'#{message.channel}-{message.author}: {message.content}')
         #delete any message posted in IdleISS_Commands_Channel: self.quiet_channel
         if message.guild != None and message.channel != None:
             if (
